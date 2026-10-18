@@ -360,6 +360,7 @@ function buildDashboardHTML() {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Request Capture Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230a0e14'/><circle cx='50' cy='50' r='35' fill='none' stroke='%234dabf7' stroke-width='4'/><circle cx='50' cy='50' r='22' fill='none' stroke='%234dabf7' stroke-width='3' opacity='.7'/><circle cx='50' cy='50' r='10' fill='none' stroke='%234dabf7' stroke-width='2' opacity='.5'/><circle cx='50' cy='50' r='4' fill='%2340c057'/><line x1='50' y1='50' x2='72' y2='28' stroke='%2340c057' stroke-width='3' stroke-linecap='round'/></svg>">
 <style>
 /* ==================== CSS Variables & Reset ==================== */
 :root {
@@ -900,6 +901,7 @@ td.cell-mono { font-family: var(--mono); font-size: 11px; }
     <button class="action-btn" onclick="openDiff()">Diff Expected</button>
     <button class="action-btn" onclick="toggleView()">Connections</button>
     <button class="action-btn" onclick="clearDisplay()">Clear</button>
+    <button class="action-btn" style="background:var(--red);color:#fff;font-weight:600" onclick="deleteAllSessions()">🗑 Delete All</button>
   </div>
 </div>
 
@@ -1480,6 +1482,31 @@ function clearDisplay() {
   tbody.innerHTML = '';
 }
 
+function deleteAllSessions() {
+  const pw = prompt('Enter password to delete ALL sessions and records:');
+  if (pw === null) return; // cancelled
+  fetch('/_api/sessions/delete-all', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ password: pw })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + data.error);
+    } else {
+      alert('Deleted ' + data.deleted + ' session(s). All records cleared.');
+      allEvents = [];
+      filteredEvents = [];
+      tbody.innerHTML = '';
+      document.querySelector('.sessions-list').innerHTML = '';
+      document.querySelectorAll('.stat-value').forEach(el => el.textContent = '0');
+      currentSession = null;
+    }
+  })
+  .catch(err => alert('Request failed: ' + err.message));
+}
+
 function formatTime(ts) {
   if (!ts) return '-';
   return ts.slice(11, 23);
@@ -1784,6 +1811,38 @@ function handleDashboardAPI(req, res, pathname) {
       sendJSON(res, 200, { deleted: sid });
       return;
     }
+  }
+
+  // POST /_api/sessions/delete-all — password protected
+  if (req.method === 'POST' && pathname === '/_api/sessions/delete-all') {
+    // Read body for password
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.password !== 'password') {
+          sendJSON(res, 403, { error: 'Invalid password' });
+          return;
+        }
+        // Delete all sessions, events, and log files
+        const count = sessions.size;
+        for (const [sid] of sessions) {
+          try { fs.unlinkSync(path.join(LOG_DIR, sid + '.jsonl')); } catch (_) {}
+        }
+        sessions.clear();
+        fallbackToSession.clear();
+        events.length = 0;
+        seq = 0;
+        stats.totalRequests = 0;
+        stats.uniqueIPs.clear();
+        stats.requestTimes.length = 0;
+        sendJSON(res, 200, { deleted: count, message: 'All sessions and records deleted' });
+      } catch (_) {
+        sendJSON(res, 400, { error: 'Invalid request body' });
+      }
+    });
+    return;
   }
 
   // GET /_api/events?since=<seq>
